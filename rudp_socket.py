@@ -1,61 +1,40 @@
 import socket
 import random
 import threading
-from packet import RUDPPacket
+from Packet import RUDPPacket
 
-MAX_RETRIES = 10          # Max send attempts before giving up
-RECV_BUFFER = 65535       # UDP max payload
+MAX_RETRIES = 10          
+RECV_BUFFER = 65535   # UDP max payload
 
 
 class ConnectionError(Exception):
-    """Raised when a reliable send exhausts all retries."""
+    """Raised when a reliable send exhausts all retries"""
 
 
 class ReliableSocket:
-    """
-    Stop-and-wait Reliable UDP socket.
-
-    Improvements over v1:
-    - Sequence numbers reset between server connections (fixes desync on 2nd client)
-    - _send_reliable raises ConnectionError after MAX_RETRIES (no infinite loop)
-    - accept() uses a dedicated _handshake_seq so server seq_num is always clean
-    - Thread-safe send/recv via a reentrant lock
-    - Simulation rates validated to [0.0, 1.0]
-    - Cleaner teardown with TIME_WAIT equivalent (flush lingering packets)
-    """
 
     def __init__(self, timeout: float = 2.0):
-        self.sock             = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(timeout)
-        self.target_addr      = None
-        self.seq_num          = 0
+        self.target_addr = None
+        self.seq_num = 0
         self.expected_seq_num = 0
-        self.loss_rate        = 0.0
-        self.corruption_rate  = 0.0
-        self.is_server        = False
-        self._lock            = threading.RLock()
-
-    # ------------------------------------------------------------------
-    # Configuration
-    # ------------------------------------------------------------------
+        self.loss_rate = 0.0
+        self.corruption_rate = 0.0
+        self.is_server = False
+        self._lock = threading.RLock()
 
     def set_simulation_rates(self, loss_rate: float = 0.0, corruption_rate: float = 0.0):
-        """Set packet loss / corruption probabilities (each must be in [0.0, 1.0])."""
         if not (0.0 <= loss_rate <= 1.0 and 0.0 <= corruption_rate <= 1.0):
             raise ValueError("Rates must be between 0.0 and 1.0")
-        self.loss_rate       = loss_rate
+        self.loss_rate = loss_rate
         self.corruption_rate = corruption_rate
 
     def bind(self, address):
         self.sock.bind(address)
         self.is_server = True
 
-    # ------------------------------------------------------------------
-    # Low-level send / recv
-    # ------------------------------------------------------------------
-
     def _send_raw(self, packet: RUDPPacket):
-        """Send one packet, applying simulated corruption and loss."""
         if random.random() < self.corruption_rate:
             print("[SIM] Corrupting packet before send…")
             packet.simulate_corruption()
@@ -71,10 +50,6 @@ class ReliableSocket:
                 print(f"[RUDP] sendto error: {e}")
 
     def _recv_raw(self):
-        """
-        Block until a valid, uncorrupted packet arrives or a timeout occurs.
-        Returns (RUDPPacket | None, addr | None).
-        """
         try:
             data, addr = self.sock.recvfrom(RECV_BUFFER)
             pkt = RUDPPacket.from_bytes(data)
@@ -88,20 +63,11 @@ class ReliableSocket:
         except socket.timeout:
             return None, None
         except (ConnectionResetError, OSError):
-            # Windows ICMP Port Unreachable and similar — safe to ignore
             return None, None
 
-    # ------------------------------------------------------------------
     # Reliable send (stop-and-wait)
-    # ------------------------------------------------------------------
-
     def _send_reliable(self, packet: RUDPPacket, expected_ack_flag: str) -> RUDPPacket:
-        """
-        Send *packet* and block until the expected ACK arrives.
-        Retransmits on timeout up to MAX_RETRIES times.
-        Raises ConnectionError when all retries are exhausted.
-        Increments self.seq_num on success.
-        """
+
         self._send_raw(packet)
         attempts = 1
 
@@ -117,27 +83,34 @@ class ReliableSocket:
                       f"{expected_ack_flag}. Retransmitting…")
                 self._send_raw(packet)
                 attempts += 1
+                continue
 
-            elif ack_pkt.flags == expected_ack_flag and ack_pkt.ack_num == packet.seq_num + 1:
-                self.seq_num += 1
-                return ack_pkt
+            if ack_pkt.flags != expected_ack_flag:
 
-            else:
-                # Wrong flag or wrong ack_num — stale / out-of-order; ignore
-                print(f"[RUDP] Unexpected packet (flags={ack_pkt.flags}, "
-                      f"ack={ack_pkt.ack_num}) while waiting for {expected_ack_flag}. Ignoring.")
+                if ack_pkt.flags == "FIN":
+                    print("[RUDP] Received FIN while waiting for ACK "
+                          "— peer already closed. Sending ACK and finishing.")
+                    ack = RUDPPacket(self.seq_num, ack_pkt.seq_num + 1, "ACK")
+                    self._send_raw(ack)
+                    # Treat this as a successful send: the peer got our data
+                    # (it wouldn't close before reading it).
+                    self.seq_num += 1
+                    return ack_pkt  
+                else:
+                    print(f"[RUDP] Unexpected packet (flags={ack_pkt.flags}, "
+                          f"ack={ack_pkt.ack_num}) while waiting for "
+                          f"{expected_ack_flag}. Ignoring.")
+                continue
 
-    # ------------------------------------------------------------------
-    # Connection management
-    # ------------------------------------------------------------------
+            self.seq_num += 1
+            return ack_pkt
 
     def connect(self, address):
-        """Client-side 3-way handshake: SYN → SYNACK → ACK."""
         self.target_addr = address
         self._reset_state()
         print("[RUDP] Initiating 3-way handshake…")
 
-        syn_pkt    = RUDPPacket(self.seq_num, 0, "SYN")
+        syn_pkt = RUDPPacket(self.seq_num, 0, "SYN")
         synack_pkt = self._send_reliable(syn_pkt, expected_ack_flag="SYNACK")
 
         self.expected_seq_num = synack_pkt.seq_num + 1
@@ -146,19 +119,12 @@ class ReliableSocket:
         print("[RUDP] Connection established.")
 
     def accept(self):
-        """
-        Server-side: block until a SYN arrives, complete the handshake,
-        and return (self, client_addr).
-
-        FIX: seq_num and expected_seq_num are reset per-connection so that
-        the second (and every subsequent) client doesn't experience desync.
-        """
         print("[RUDP] Listening for incoming connections…")
         while True:
             pkt, addr = self._recv_raw()
             if pkt and pkt.flags == "SYN":
                 self.target_addr      = addr
-                self._reset_state()                         # ← key fix
+                self._reset_state()
                 self.expected_seq_num = pkt.seq_num + 1
 
                 print(f"[RUDP] Received SYN from {addr}. Sending SYNACK…")
@@ -167,30 +133,26 @@ class ReliableSocket:
                 print(f"[RUDP] Connection accepted from {addr}.")
                 return self, addr
 
-    # ------------------------------------------------------------------
-    # Data transfer
-    # ------------------------------------------------------------------
 
     def send(self, data: str):
-        """Reliably send a DATA packet carrying *data*."""
         with self._lock:
             pkt = RUDPPacket(self.seq_num, self.expected_seq_num, "DATA", data)
             self._send_reliable(pkt, expected_ack_flag="ACK")
 
     def recv(self) -> str:
-        """
-        Block until a DATA packet with the expected sequence number arrives.
-        Duplicate packets are ACKed again (sender may not have got the first ACK).
-        Returns the payload string.
-        """
         with self._lock:
             while True:
                 pkt, _ = self._recv_raw()
                 if pkt is None:
                     continue
 
+                if pkt.flags == "FIN":
+                    print("[RUDP] Received FIN inside recv() — sending ACK.")
+                    ack = RUDPPacket(self.seq_num, pkt.seq_num + 1, "ACK")
+                    self._send_raw(ack)
+                    continue   
+
                 if pkt.flags != "DATA":
-                    # Could be a stale handshake/teardown packet — ignore
                     continue
 
                 if pkt.seq_num == self.expected_seq_num:
@@ -199,22 +161,12 @@ class ReliableSocket:
                     self._send_raw(ack)
                     return pkt.data
                 else:
-                    # Duplicate — resend ACK so the sender can move on
                     print(f"[RUDP] Duplicate DATA (seq={pkt.seq_num} "
                           f"expected={self.expected_seq_num}). Resending ACK.")
                     ack = RUDPPacket(self.seq_num, self.expected_seq_num, "ACK")
                     self._send_raw(ack)
 
-    # ------------------------------------------------------------------
-    # Teardown
-    # ------------------------------------------------------------------
-
     def close(self):
-        """
-        Send FIN and wait for acknowledgment.
-        Server resets state and keeps socket alive for the next client.
-        Client closes the underlying UDP socket.
-        """
         print("[RUDP] Initiating teardown (FIN)…")
         fin_pkt = RUDPPacket(self.seq_num, self.expected_seq_num, "FIN")
 
@@ -240,10 +192,14 @@ class ReliableSocket:
                 acked = True
                 break
 
+            if pkt.flags == "DATA":
+                print("[RUDP] Late DATA received during teardown — ACKing and discarding.")
+                ack = RUDPPacket(self.seq_num, pkt.seq_num + 1, "ACK")
+                self._send_raw(ack)
+
         if not acked:
             print("[RUDP] Teardown timed out — closing anyway.")
 
-        # Brief TIME_WAIT: drain any in-flight packets before closing
         self.sock.settimeout(0.5)
         while True:
             pkt, _ = self._recv_raw()
@@ -252,7 +208,6 @@ class ReliableSocket:
         self.sock.settimeout(2.0)
 
         if self.is_server:
-            # Server: keep socket alive, reset per-connection state
             self.target_addr = None
             print("[RUDP] Connection closed. Server socket ready for next client.")
         else:
@@ -262,11 +217,6 @@ class ReliableSocket:
                 pass
             print("[RUDP] Socket closed.")
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _reset_state(self):
-        """Reset sequence numbers for a fresh connection."""
         self.seq_num          = 0
         self.expected_seq_num = 0

@@ -6,13 +6,7 @@ class RUDPPacket:
     VALID_FLAGS = {'SYN', 'SYNACK', 'ACK', 'FIN', 'DATA'}
 
     def __init__(self, seq_num, ack_num, flags, data=""):
-        """
-        Initializes a Reliable UDP Packet.
-        seq_num  : sender's sequence number
-        ack_num  : next sequence number the sender expects to receive
-        flags    : one of SYN | SYNACK | ACK | FIN | DATA
-        data     : payload string (only meaningful for DATA packets)
-        """
+
         if flags not in self.VALID_FLAGS:
             raise ValueError(f"[Packet] Invalid flag '{flags}'. Must be one of {self.VALID_FLAGS}")
 
@@ -22,29 +16,20 @@ class RUDPPacket:
         self.data     = data
         self.checksum = self._calculate_checksum()
 
-    # ------------------------------------------------------------------
-    # Integrity
-    # ------------------------------------------------------------------
 
     def _calculate_checksum(self):
-        """MD5 over all header fields + payload for complete integrity."""
         content = f"{self.seq_num}:{self.ack_num}:{self.flags}:{self.data}"
         return hashlib.md5(content.encode("utf-8")).hexdigest()
 
     def is_corrupt(self):
-        """Returns True when the stored checksum doesn't match a fresh computation."""
         return self.checksum != self._calculate_checksum()
 
     def simulate_corruption(self):
-        """Intentionally corrupt the checksum to test the receiver's detection logic."""
         self.checksum = "corrupted_checksum_0000"
 
-    # ------------------------------------------------------------------
     # Serialization
-    # ------------------------------------------------------------------
 
     def to_bytes(self):
-        """Serialize the packet to a UTF-8 JSON byte string."""
         return json.dumps({
             "seq_num":  self.seq_num,
             "ack_num":  self.ack_num,
@@ -55,11 +40,7 @@ class RUDPPacket:
 
     @classmethod
     def from_bytes(cls, raw_bytes):
-        """
-        Deserialize raw bytes back into an RUDPPacket.
-        Returns None if the bytes are not valid JSON or are missing required keys.
-        The stored checksum is preserved so is_corrupt() can validate it later.
-        """
+
         try:
             d = json.loads(raw_bytes.decode("utf-8"))
             pkt = cls(
@@ -75,9 +56,6 @@ class RUDPPacket:
         except (json.JSONDecodeError, KeyError, ValueError):
             return None
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def __str__(self):
         snippet = (self.data[:30] + "…") if len(self.data) > 30 else self.data
