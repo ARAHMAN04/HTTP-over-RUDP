@@ -1,4 +1,3 @@
-
 import os
 import threading
 from rudp_socket import ReliableSocket, ConnectionError
@@ -32,7 +31,6 @@ def _build_response(status: str, body: str, content_type: str = "text/html") -> 
         "Connection: close\r\n\r\n"
         f"{body}"
     )
-
 
 def _safe_filepath(path: str) -> str | None:
     if path == "/":

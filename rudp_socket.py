@@ -130,7 +130,6 @@ class ReliableSocket:
                 print(f"[RUDP] Connection accepted from {addr}.")
                 return self, addr
 
-
     def send(self, data: str):
         with self._lock:
             pkt = RUDPPacket(self.seq_num, self.expected_seq_num, "DATA", data)
@@ -164,56 +163,57 @@ class ReliableSocket:
                     self._send_raw(ack)
 
     def close(self):
-        print("[RUDP] Initiating teardown (FIN)…")
-        fin_pkt = RUDPPacket(self.seq_num, self.expected_seq_num, "FIN")
 
+        if self.is_server:
+            print("[RUDP] Waiting for client FIN...")
+            for _ in range(MAX_RETRIES):
+                pkt, _ = self._recv_raw()
+                if pkt is None:
+                    continue
+                if pkt.flags == "FIN":
+                    ack = RUDPPacket(self.seq_num, pkt.seq_num + 1, "ACK")
+                    self._send_raw(ack)
+                    print("[RUDP] Client FIN acknowledged.")
+                    break
+            self.target_addr = None
+            print("[RUDP] Connection closed. Server socket ready for next client.")
+            return
+ 
+        # Client path
+        print("[RUDP] Initiating teardown (FIN)...")
+        fin_pkt = RUDPPacket(self.seq_num, self.expected_seq_num, "FIN")
+ 
         acked = False
         for attempt in range(1, MAX_RETRIES + 1):
             self._send_raw(fin_pkt)
             pkt, _ = self._recv_raw()
-
+ 
             if pkt is None:
                 print(f"[RUDP] FIN attempt {attempt}/{MAX_RETRIES}: no response.")
                 continue
-
+ 
             if pkt.flags == "ACK":
                 print("[RUDP] Teardown acknowledged.")
                 acked = True
                 break
-
+ 
             if pkt.flags == "FIN":
-                # Simultaneous close
-                print("[RUDP] Simultaneous FIN received. Sending ACK…")
+                # Simultaneous close edge case
+                print("[RUDP] Simultaneous FIN. Sending ACK...")
                 ack = RUDPPacket(self.seq_num, pkt.seq_num + 1, "ACK")
                 self._send_raw(ack)
                 acked = True
                 break
-
-            if pkt.flags == "DATA":
-                print("[RUDP] Late DATA received during teardown — ACKing and discarding.")
-                ack = RUDPPacket(self.seq_num, pkt.seq_num + 1, "ACK")
-                self._send_raw(ack)
-
+ 
         if not acked:
-            print("[RUDP] Teardown timed out — closing anyway.")
-
-        self.sock.settimeout(0.5)
-        while True:
-            pkt, _ = self._recv_raw()
-            if pkt is None:
-                break
-        self.sock.settimeout(2.0)
-
-        if self.is_server:
-            self.target_addr = None
-            print("[RUDP] Connection closed. Server socket ready for next client.")
-        else:
-            try:
-                self.sock.close()
-            except OSError:
-                pass
-            print("[RUDP] Socket closed.")
+            print("[RUDP] Teardown timed out - closing anyway.")
+ 
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        print("[RUDP] Socket closed.")
 
     def _reset_state(self):
-        self.seq_num          = 0
+        self.seq_num  = 0
         self.expected_seq_num = 0
