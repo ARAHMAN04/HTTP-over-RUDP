@@ -73,7 +73,6 @@ class ReliableSocket:
 
         while True:
             ack_pkt, _ = self._recv_raw()
-
             if ack_pkt is None:
                 if attempts >= MAX_RETRIES:
                     raise ConnectionError(
@@ -92,8 +91,6 @@ class ReliableSocket:
                           "— peer already closed. Sending ACK and finishing.")
                     ack = RUDPPacket(self.seq_num, ack_pkt.seq_num + 1, "ACK")
                     self._send_raw(ack)
-                    # Treat this as a successful send: the peer got our data
-                    # (it wouldn't close before reading it).
                     self.seq_num += 1
                     return ack_pkt  
                 else:
@@ -123,7 +120,7 @@ class ReliableSocket:
         while True:
             pkt, addr = self._recv_raw()
             if pkt and pkt.flags == "SYN":
-                self.target_addr      = addr
+                self.target_addr = addr
                 self._reset_state()
                 self.expected_seq_num = pkt.seq_num + 1
 

@@ -1,30 +1,12 @@
-"""
-HTTP/1.0 server over Reliable UDP.
-
-Enhancements over v1:
-- Each client is handled in its own daemon thread (non-blocking accept loop)
-- Content-Type header added to all responses
-- Proper 405 Method Not Allowed for unsupported verbs
-- Path traversal guard (requests can't escape the working directory)
-- Graceful KeyboardInterrupt shutdown message
-- Configurable host / port / www root via constants at the top
-"""
 
 import os
 import threading
 from rudp_socket import ReliableSocket, ConnectionError
 
-# ------------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------------
 HOST     = "127.0.0.1"
 PORT     = 8080
-WWW_ROOT = "."          # Directory that holds served files
+WWW_ROOT = "."         
 
-
-# ------------------------------------------------------------------
-# MIME helpers
-# ------------------------------------------------------------------
 
 _MIME_MAP = {
     ".html": "text/html",
@@ -42,11 +24,6 @@ def _mime(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     return _MIME_MAP.get(ext, "application/octet-stream")
 
-
-# ------------------------------------------------------------------
-# HTTP helpers
-# ------------------------------------------------------------------
-
 def _build_response(status: str, body: str, content_type: str = "text/html") -> str:
     return (
         f"HTTP/1.0 {status}\r\n"
@@ -58,29 +35,17 @@ def _build_response(status: str, body: str, content_type: str = "text/html") -> 
 
 
 def _safe_filepath(path: str) -> str | None:
-    """
-    Resolve the requested URL path to a local filesystem path.
-    Returns None if the resolved path escapes WWW_ROOT (path-traversal guard).
-    """
     if path == "/":
         path = "/index.html"
 
-    # Strip leading slash and join with root
     candidate = os.path.realpath(os.path.join(WWW_ROOT, path.lstrip("/")))
     root       = os.path.realpath(WWW_ROOT)
-
-    # Must still be under root
     if not candidate.startswith(root + os.sep) and candidate != root:
         return None
     return candidate
 
 
-# ------------------------------------------------------------------
-# Per-client handler
-# ------------------------------------------------------------------
-
 def _handle_client(conn: ReliableSocket, addr):
-    """Handle one HTTP/1.0 request-response cycle on *conn*."""
     print(f"\n[SERVER] Handling client {addr}")
     try:
         request_data = conn.recv()
@@ -93,7 +58,7 @@ def _handle_client(conn: ReliableSocket, addr):
         conn.close()
         return
 
-    print(f"[SERVER] ← {addr}\n{request_data.splitlines()[0]}")   # log first line only
+    print(f"[SERVER] ← {addr}\n{request_data.splitlines()[0]}")  
 
     lines        = request_data.split("\r\n")
     request_line = lines[0].split(" ")
@@ -106,7 +71,7 @@ def _handle_client(conn: ReliableSocket, addr):
     method = request_line[0].upper()
     path   = request_line[1]
 
-    # ---- GET --------------------------------------------------------
+    # ---- GET ----
     if method == "GET":
         filepath = _safe_filepath(path)
 
@@ -125,7 +90,7 @@ def _handle_client(conn: ReliableSocket, addr):
         else:
             response = _build_response("404 Not Found", "<h1>404 Not Found</h1>")
 
-    # ---- POST -------------------------------------------------------
+    # ---- POST ----
     elif method == "POST":
         parts     = request_data.split("\r\n\r\n", 1)
         post_body = parts[1] if len(parts) > 1 else ""
@@ -133,7 +98,7 @@ def _handle_client(conn: ReliableSocket, addr):
         body     = f"POST received ({len(post_body)} bytes)."
         response = _build_response("200 OK", body, "text/plain")
 
-    # ---- Anything else ----------------------------------------------
+    # ---- Anything else ----
     else:
         body     = f"<h1>405 Method Not Allowed</h1><p>{method} is not supported.</p>"
         response = _build_response("405 Method Not Allowed", body)
@@ -149,11 +114,7 @@ def _send_and_close(conn: ReliableSocket, response: str):
     finally:
         conn.close()
 
-
-# ------------------------------------------------------------------
 # Main server loop
-# ------------------------------------------------------------------
-
 def run_server():
     server = ReliableSocket()
     server.bind((HOST, PORT))
@@ -169,12 +130,8 @@ def run_server():
         print("\n[SERVER] Shutting down.")
 
 
-# ------------------------------------------------------------------
 # Entry point
-# ------------------------------------------------------------------
-
 if __name__ == "__main__":
-    # Seed a demo index.html if it doesn't already exist
     index = os.path.join(WWW_ROOT, "index.html")
     if not os.path.exists(index):
         with open(index, "w", encoding="utf-8") as f:

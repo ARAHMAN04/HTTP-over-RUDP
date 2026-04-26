@@ -1,31 +1,11 @@
-"""
-HTTP/1.0 client over Reliable UDP.
-
-Enhancements over v1:
-- Configurable host, port, method, path, and POST body via constants / CLI args
-- ConnectionError is caught and reported instead of hanging forever
-- Response is split into headers + body for cleaner display
-- Optional simulation rates for testing loss/corruption
-- sys.argv allows quick ad-hoc requests without editing the file:
-    python client.py GET /index.html
-    python client.py POST /submit "name=Alice&age=30"
-"""
-
 import sys
 from rudp_socket import ReliableSocket, ConnectionError
 
-# ------------------------------------------------------------------
-# Configuration (defaults — override via sys.argv or edit here)
-# ------------------------------------------------------------------
 SERVER_HOST      = "127.0.0.1"
 SERVER_PORT      = 8080
-SIM_LOSS_RATE    = 0.0    # 0.0 – 1.0
-SIM_CORRUPT_RATE = 0.0    # 0.0 – 1.0
+SIM_LOSS_RATE    = 0.0   
+SIM_CORRUPT_RATE = 0.0   
 
-
-# ------------------------------------------------------------------
-# HTTP request builder
-# ------------------------------------------------------------------
 
 def _build_get(path: str) -> str:
     return (
@@ -48,12 +28,7 @@ def _build_post(path: str, body: str) -> str:
     )
 
 
-# ------------------------------------------------------------------
-# Response parser
-# ------------------------------------------------------------------
-
 def _parse_response(raw: str):
-    """Split response into status line, headers dict, and body."""
     parts   = raw.split("\r\n\r\n", 1)
     header_block = parts[0]
     body    = parts[1] if len(parts) > 1 else ""
@@ -67,10 +42,6 @@ def _parse_response(raw: str):
     return status, headers, body
 
 
-# ------------------------------------------------------------------
-# Main client function
-# ------------------------------------------------------------------
-
 def run_client(method: str = "GET", path: str = "/index.html", post_body: str = ""):
     client = ReliableSocket()
 
@@ -78,7 +49,7 @@ def run_client(method: str = "GET", path: str = "/index.html", post_body: str = 
         client.set_simulation_rates(SIM_LOSS_RATE, SIM_CORRUPT_RATE)
         print(f"[CLIENT] Simulation — loss={SIM_LOSS_RATE:.0%}  corrupt={SIM_CORRUPT_RATE:.0%}")
 
-    # ---- Handshake --------------------------------------------------
+    # ---- Handshake ----
     print(f"[CLIENT] Connecting to {SERVER_HOST}:{SERVER_PORT}…")
     try:
         client.connect((SERVER_HOST, SERVER_PORT))
@@ -86,7 +57,7 @@ def run_client(method: str = "GET", path: str = "/index.html", post_body: str = 
         print(f"[CLIENT] Connection failed: {e}")
         return
 
-    # ---- Build request ----------------------------------------------
+    # ---- Build request ----
     method = method.upper()
     if method == "GET":
         request = _build_get(path)
@@ -99,7 +70,7 @@ def run_client(method: str = "GET", path: str = "/index.html", post_body: str = 
 
     print(f"[CLIENT] → {method} {path}")
 
-    # ---- Send -------------------------------------------------------
+    # ---- Send ----
     try:
         client.send(request)
     except ConnectionError as e:
@@ -107,7 +78,7 @@ def run_client(method: str = "GET", path: str = "/index.html", post_body: str = 
         client.close()
         return
 
-    # ---- Receive ----------------------------------------------------
+    # ---- Receive ----
     print("[CLIENT] Waiting for response…")
     try:
         raw = client.recv()
@@ -125,16 +96,12 @@ def run_client(method: str = "GET", path: str = "/index.html", post_body: str = 
     print(f"\n{body}")
     print("[CLIENT] ─────────────────────────────────────────────")
 
-    # ---- Teardown ---------------------------------------------------
+    # ---- Teardown ----
     client.close()
 
 
-# ------------------------------------------------------------------
 # Entry point
-# ------------------------------------------------------------------
-
 if __name__ == "__main__":
-    # Usage: python client.py [METHOD] [PATH] [POST_BODY]
     method    = sys.argv[1] if len(sys.argv) > 1 else "GET"
     path      = sys.argv[2] if len(sys.argv) > 2 else "/index.html"
     post_body = sys.argv[3] if len(sys.argv) > 3 else ""
