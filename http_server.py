@@ -37,7 +37,7 @@ def _safe_filepath(path: str) -> str | None:
         path = "/index.html"
 
     candidate = os.path.realpath(os.path.join(WWW_ROOT, path.lstrip("/")))
-    root       = os.path.realpath(WWW_ROOT)
+    root = os.path.realpath(WWW_ROOT)
     if not candidate.startswith(root + os.sep) and candidate != root:
         return None
     return candidate
